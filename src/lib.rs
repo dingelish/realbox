@@ -194,7 +194,7 @@ mod test {
     }
 
     #[test]
-    fn test_alloc_init() {
+    fn test_heap_init() {
         extern crate libc;
         use core::ffi::c_void;
 
@@ -205,11 +205,11 @@ mod test {
             a: [u8; 4],
         }
 
-        let stack_obj = Box::new(Obj {
+        let stack_obj = Obj {
             x: 12,
             y: 0.9,
             a: [0xff, 0xfe, 0xfd, 0xfc],
-        });
+        };
 
         let heap_obj = RealBox::<Obj>::heap_init(|mut t| {
             t.x = 12;
@@ -222,7 +222,7 @@ mod test {
         unsafe {
             assert_eq!(
                 libc::memcmp(
-                    Box::into_raw(stack_obj) as *const c_void,
+                    &stack_obj as *const Obj as *const c_void,
                     Box::into_raw(heap_obj) as *const c_void,
                     size
                 ),
