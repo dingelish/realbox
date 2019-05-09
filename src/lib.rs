@@ -4,6 +4,7 @@
 #![feature(const_fn)]
 #![feature(ptr_internals)]
 #![feature(try_reserve)]
+#![feature(dropck_eyepatch)]
 
 extern crate alloc;
 extern crate core;
@@ -34,23 +35,66 @@ pub struct PureHeap<T, A: Alloc = Global> {
 }
 
 impl<T, A: Alloc> PureHeap<T, A> {
-
-    pub(crate) fn new_in(a: A) -> Self {
-        PureHeap::allocate_in(mem::size_of::<T>(), true, a)
+    /// Gets a raw pointer to the start of the allocation. Note that this is
+    /// Unique::empty() if `cap = 0` or T is zero-sized. In the former case, you must
+    /// be careful.
+    pub fn ptr(&self) -> *mut T {
+        self.ptr.as_ptr()
     }
 
-    fn allocate_in(cap: usize, zeroed: bool, mut a: A) -> Self {
+    /// Returns a shared reference to the allocator backing this RawVec.
+    pub fn alloc(&self) -> &A {
+        &self.a
+    }
+
+    /// Returns a mutable reference to the allocator backing this RawVec.
+    pub fn alloc_mut(&mut self) -> &mut A {
+        &mut self.a
+    }
+
+    fn current_layout(&self) -> Option<Layout> {
+            unsafe {
+                let align = mem::align_of::<T>();
+                let size = mem::size_of::<T>();
+                Some(Layout::from_size_align_unchecked(size, align))
+            }
+    }
+}
+
+impl<T, A: Alloc> PureHeap<T, A> {
+    pub unsafe fn dealloc_buffer(&mut self) {
+        let elem_size = mem::size_of::<T>();
+        if elem_size != 0 {
+            if let Some(layout) = self.current_layout() {
+                self.a.dealloc(NonNull::from(self.ptr).cast(), layout);
+            }
+        }
+    }
+}
+
+unsafe impl<#[may_dangle] T, A: Alloc> Drop for PureHeap<T, A> {
+    fn drop(&mut self) {
+        unsafe { self.dealloc_buffer(); }
+    }
+}
+
+impl<T, A: Alloc> PureHeap<T, A> {
+
+    pub(crate) fn new_in(a: A) -> Self {
+        PureHeap::allocate_in(true, a)
+    }
+
+    fn allocate_in(zeroed: bool, mut a: A) -> Self {
         let elem_size = mem::size_of::<T>();
 
-        let alloc_size = cap.checked_mul(elem_size).unwrap_or_else(|| capacity_overflow());
-        alloc_guard(alloc_size).unwrap_or_else(|_| capacity_overflow());
+        alloc_guard(elem_size).unwrap_or_else(|_| capacity_overflow());
 
         // handles ZSTs and `cap = 0` alike
-        let ptr = if alloc_size == 0 {
+        let ptr = if elem_size == 0 {
             NonNull::<T>::dangling()
         } else {
             let align = mem::align_of::<T>();
-            let layout = Layout::from_size_align(alloc_size, align).unwrap();
+            let layout = Layout::from_size_align(elem_size, align).unwrap();
             let result = if zeroed {
                 unsafe { a.alloc_zeroed(layout) }
             } else {
@@ -119,16 +163,33 @@ mod test {
         assert_ne!(t.ptr.as_ptr(), core::ptr::null_mut());
     }
 
-    #[test]
-    #[should_panic] // This should OOM and cargo test cannot unwind it!
-    fn test_big() {
-        use std::boxed::Box;
-        let _ = Box::new([[0;1000];1000]);
-    }
+    //#[test]
+    //#[should_panic] // This should OOM and cargo test cannot unwind it!
+    //fn test_big() {
+    //    use std::boxed::Box;
+    //    let _ = Box::new([[0;1000];1000]);
+    //}
 
     #[test]
     fn test_pure_big() {
-        let t = PureHeap::<[[i32;1000];1000]>::new();
+        let t = PureHeap::<[[i32;100];1000]>::new();
         assert_ne!(t.ptr.as_ptr(), core::ptr::null_mut());
+    }
+
+    struct DummyStruct;
+    #[test]
+    fn test_zero() {
+        use core::ptr::NonNull;
+        let t = PureHeap::<DummyStruct>::new();
+        assert_eq!(t.ptr.as_ptr(), NonNull::<_>::dangling().as_ptr());
+    }
+
+    #[test]
+    fn test_drop() {
+        let t = PureHeap::<[[i32;10000];1000]>::new();
+        let ptr = t.ptr.as_ptr();
+        mem::drop(t);
+        let t = PureHeap::<[[i32;10000];1000]>::new();
+        assert_eq!(ptr, t.ptr.as_ptr());
     }
 }
