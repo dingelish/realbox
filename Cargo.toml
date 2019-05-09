@@ -1,7 +1,7 @@
 [package]
 name = "realbox"
 version = "0.1.0"
-authors = ["dingelish <dingelish@gmail.com>"]
+authors = ["dingelish <dingelish@gmail.com>", "zhaofeng chen <chenzhaofeng.pku@gmail.com>"]
 edition = "2018"
 
 [dependencies]
