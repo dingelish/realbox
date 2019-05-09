@@ -1,34 +1,17 @@
 #![no_std]
 #![feature(allocator_api)]
-#![feature(const_fn)]
 #![feature(ptr_internals)]
 #![feature(try_reserve)]
 #![feature(dropck_eyepatch)]
 #![feature(rustc_private)]
 
-
 extern crate alloc;
-extern crate core;
-use core::alloc::Alloc;
-use core::ptr::{NonNull, Unique};
-use core::mem;
-use alloc::alloc::{Layout, Global};
 use alloc::alloc::handle_alloc_error;
+use alloc::alloc::{Global, Layout};
 use alloc::boxed::Box;
-use alloc::collections::CollectionAllocErr::{self, *};
-
-fn capacity_overflow() -> ! {
-    panic!("capacity overflow")
-}
-
-#[inline]
-fn alloc_guard(alloc_size: usize) -> Result<(), CollectionAllocErr> {
-    if mem::size_of::<usize>() < 8 && alloc_size > core::isize::MAX as usize {
-        Err(CapacityOverflow)
-    } else {
-        Ok(())
-    }
-}
+use core::alloc::Alloc;
+use core::mem;
+use core::ptr::{NonNull, Unique};
 
 pub struct RealBox<T, A: Alloc = Global> {
     ptr: Unique<T>,
@@ -54,11 +37,11 @@ impl<T, A: Alloc> RealBox<T, A> {
     }
 
     fn current_layout(&self) -> Option<Layout> {
-            unsafe {
-                let align = mem::align_of::<T>();
-                let size = mem::size_of::<T>();
-                Some(Layout::from_size_align_unchecked(size, align))
-            }
+        unsafe {
+            let align = mem::align_of::<T>();
+            let size = mem::size_of::<T>();
+            Some(Layout::from_size_align_unchecked(size, align))
+        }
     }
 }
 
@@ -75,20 +58,19 @@ impl<T, A: Alloc> RealBox<T, A> {
 
 unsafe impl<#[may_dangle] T, A: Alloc> Drop for RealBox<T, A> {
     fn drop(&mut self) {
-        unsafe { self.dealloc_buffer(); }
+        unsafe {
+            self.dealloc_buffer();
+        }
     }
 }
 
 impl<T, A: Alloc> RealBox<T, A> {
-
     pub(crate) fn new_in(a: A) -> Self {
         RealBox::allocate_in(true, a)
     }
 
     fn allocate_in(zeroed: bool, mut a: A) -> Self {
         let elem_size = mem::size_of::<T>();
-
-        alloc_guard(elem_size).unwrap_or_else(|_| capacity_overflow());
 
         // handles ZSTs and `cap = 0` alike
         let ptr = if elem_size == 0 {
@@ -107,10 +89,7 @@ impl<T, A: Alloc> RealBox<T, A> {
             }
         };
 
-        RealBox {
-            ptr: ptr.into(),
-            a,
-        }
+        RealBox { ptr: ptr.into(), a }
     }
 }
 
@@ -128,10 +107,11 @@ impl<T> RealBox<T, Global> {
 }
 
 impl<T> RealBox<T, Global> {
-    pub fn heap_init<F> (initialize: F) -> Box<T>
-        where F: Fn(&mut T)
+    pub fn heap_init<F>(initialize: F) -> Box<T>
+    where
+        F: Fn(&mut T),
     {
-        unsafe { 
+        unsafe {
             let mut t = Self::new_in(Global).into_box();
             initialize(t.as_mut());
             t
@@ -192,7 +172,7 @@ mod test {
 
     #[test]
     fn test_pure_big() {
-        let t = RealBox::<[[i32;100];1000]>::new();
+        let t = RealBox::<[[i32; 100]; 1000]>::new();
         assert_ne!(t.ptr.as_ptr(), core::ptr::null_mut());
     }
 
@@ -206,39 +186,48 @@ mod test {
 
     #[test]
     fn test_drop() {
-        let t = RealBox::<[[i32;10000];1000]>::new();
+        let t = RealBox::<[[i32; 10000]; 1000]>::new();
         let ptr = t.ptr.as_ptr();
-        mem::drop(t);
-        let t = RealBox::<[[i32;10000];1000]>::new();
+        drop(t);
+        let t = RealBox::<[[i32; 10000]; 1000]>::new();
         assert_eq!(ptr, t.ptr.as_ptr());
     }
 
     #[test]
-    fn test_heap_init() {
+    fn test_alloc_init() {
         extern crate libc;
         use core::ffi::c_void;
 
+        #[derive(Debug)]
         struct Obj {
             x: u32,
             y: f64,
-            a: [u8;4]
+            a: [u8; 4],
         }
 
-
-        let stack_obj = Box::new(Obj {x:12, y:0.9, a:[0xff, 0xfe, 0xfd, 0xfc]});
+        let stack_obj = Box::new(Obj {
+            x: 12,
+            y: 0.9,
+            a: [0xff, 0xfe, 0xfd, 0xfc],
+        });
 
         let heap_obj = RealBox::<Obj>::heap_init(|mut t| {
             t.x = 12;
-            t.y = 0.9; 
+            t.y = 0.9;
             t.a = [0xff, 0xfe, 0xfd, 0xfc]
         });
-        
+
         let size = mem::size_of::<Obj>();
 
-        unsafe { 
-        assert_eq!(libc::memcmp(Box::into_raw(stack_obj) as *const c_void, 
-                                Box::into_raw(heap_obj) as *const c_void, 
-                                size), 0);
+        unsafe {
+            assert_eq!(
+                libc::memcmp(
+                    Box::into_raw(stack_obj) as *const c_void,
+                    Box::into_raw(heap_obj) as *const c_void,
+                    size
+                ),
+                0
+            );
         }
     }
 }
