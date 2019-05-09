@@ -1,10 +1,11 @@
 #![no_std]
-
 #![feature(allocator_api)]
 #![feature(const_fn)]
 #![feature(ptr_internals)]
 #![feature(try_reserve)]
 #![feature(dropck_eyepatch)]
+#![feature(rustc_private)]
+
 
 extern crate alloc;
 extern crate core;
@@ -29,12 +30,12 @@ fn alloc_guard(alloc_size: usize) -> Result<(), CollectionAllocErr> {
     }
 }
 
-pub struct PureHeap<T, A: Alloc = Global> {
-    pub ptr: Unique<T>,
+pub struct RealBox<T, A: Alloc = Global> {
+    ptr: Unique<T>,
     a: A,
 }
 
-impl<T, A: Alloc> PureHeap<T, A> {
+impl<T, A: Alloc> RealBox<T, A> {
     /// Gets a raw pointer to the start of the allocation. Note that this is
     /// Unique::empty() if `cap = 0` or T is zero-sized. In the former case, you must
     /// be careful.
@@ -61,7 +62,7 @@ impl<T, A: Alloc> PureHeap<T, A> {
     }
 }
 
-impl<T, A: Alloc> PureHeap<T, A> {
+impl<T, A: Alloc> RealBox<T, A> {
     pub unsafe fn dealloc_buffer(&mut self) {
         let elem_size = mem::size_of::<T>();
         if elem_size != 0 {
@@ -72,16 +73,16 @@ impl<T, A: Alloc> PureHeap<T, A> {
     }
 }
 
-unsafe impl<#[may_dangle] T, A: Alloc> Drop for PureHeap<T, A> {
+unsafe impl<#[may_dangle] T, A: Alloc> Drop for RealBox<T, A> {
     fn drop(&mut self) {
         unsafe { self.dealloc_buffer(); }
     }
 }
 
-impl<T, A: Alloc> PureHeap<T, A> {
+impl<T, A: Alloc> RealBox<T, A> {
 
     pub(crate) fn new_in(a: A) -> Self {
-        PureHeap::allocate_in(true, a)
+        RealBox::allocate_in(true, a)
     }
 
     fn allocate_in(zeroed: bool, mut a: A) -> Self {
@@ -106,38 +107,57 @@ impl<T, A: Alloc> PureHeap<T, A> {
             }
         };
 
-        PureHeap {
+        RealBox {
             ptr: ptr.into(),
             a,
         }
     }
 }
 
-impl<T> PureHeap<T, Global> {
+impl<T> RealBox<T, Global> {
     pub fn new() -> Self {
         Self::new_in(Global)
     }
+
+    /// Converts the entire buffer into `Box<T>`.
+    pub unsafe fn into_box(self) -> Box<T> {
+        let output: Box<T> = Box::from_raw(self.ptr());
+        mem::forget(self);
+        output
+    }
 }
 
-impl<T, A: Alloc> PureHeap<T, A> {
+impl<T> RealBox<T, Global> {
+    pub fn heap_init<F> (initialize: F) -> Box<T>
+        where F: Fn(&mut T)
+    {
+        unsafe { 
+            let mut t = Self::new_in(Global).into_box();
+            initialize(t.as_mut());
+            t
+        }
+    }
+}
+
+impl<T, A: Alloc> RealBox<T, A> {
     pub fn new_with_allocator(a: A) -> Self {
         Self::new_in(a)
     }
 }
 
-impl<T, A: Alloc> PureHeap<T, A> {
+impl<T, A: Alloc> RealBox<T, A> {
     pub unsafe fn from_raw_parts(ptr: *mut T, a: A) -> Self {
-        PureHeap {
+        RealBox {
             ptr: Unique::new_unchecked(ptr),
             a,
         }
     }
 }
 
-impl<T> PureHeap<T, Global> {
+impl<T> RealBox<T, Global> {
     pub fn from_box(mut slice: Box<[T]>) -> Self {
         unsafe {
-            let result = PureHeap::from_raw_parts(slice.as_mut_ptr(), Global);
+            let result = RealBox::from_raw_parts(slice.as_mut_ptr(), Global);
             mem::forget(slice);
             result
         }
@@ -150,7 +170,7 @@ mod test {
 
     #[test]
     fn test_naive_i32() {
-        let t = PureHeap::<i32>::new();
+        let t = RealBox::<i32>::new();
         assert_ne!(t.ptr.as_ptr(), core::ptr::null_mut());
     }
 
@@ -159,7 +179,7 @@ mod test {
 
     #[test]
     fn test_alloc_with_system() {
-        let t = PureHeap::<i32, System>::new_with_allocator(System);
+        let t = RealBox::<i32, System>::new_with_allocator(System);
         assert_ne!(t.ptr.as_ptr(), core::ptr::null_mut());
     }
 
@@ -172,7 +192,7 @@ mod test {
 
     #[test]
     fn test_pure_big() {
-        let t = PureHeap::<[[i32;100];1000]>::new();
+        let t = RealBox::<[[i32;100];1000]>::new();
         assert_ne!(t.ptr.as_ptr(), core::ptr::null_mut());
     }
 
@@ -180,16 +200,45 @@ mod test {
     #[test]
     fn test_zero() {
         use core::ptr::NonNull;
-        let t = PureHeap::<DummyStruct>::new();
+        let t = RealBox::<DummyStruct>::new();
         assert_eq!(t.ptr.as_ptr(), NonNull::<_>::dangling().as_ptr());
     }
 
     #[test]
     fn test_drop() {
-        let t = PureHeap::<[[i32;10000];1000]>::new();
+        let t = RealBox::<[[i32;10000];1000]>::new();
         let ptr = t.ptr.as_ptr();
         mem::drop(t);
-        let t = PureHeap::<[[i32;10000];1000]>::new();
+        let t = RealBox::<[[i32;10000];1000]>::new();
         assert_eq!(ptr, t.ptr.as_ptr());
+    }
+
+    #[test]
+    fn test_heap_init() {
+        extern crate libc;
+        use core::ffi::c_void;
+
+        struct Obj {
+            x: u32,
+            y: f64,
+            a: [u8;4]
+        }
+
+
+        let stack_obj = Box::new(Obj {x:12, y:0.9, a:[0xff, 0xfe, 0xfd, 0xfc]});
+
+        let heap_obj = RealBox::<Obj>::heap_init(|mut t| {
+            t.x = 12;
+            t.y = 0.9; 
+            t.a = [0xff, 0xfe, 0xfd, 0xfc]
+        });
+        
+        let size = mem::size_of::<Obj>();
+
+        unsafe { 
+        assert_eq!(libc::memcmp(Box::into_raw(stack_obj) as *const c_void, 
+                                Box::into_raw(heap_obj) as *const c_void, 
+                                size), 0);
+        }
     }
 }
