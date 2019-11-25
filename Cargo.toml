@@ -4,5 +4,6 @@ version = "0.1.0"
 authors = ["dingelish <dingelish@gmail.com>", "zhaofeng chen <chenzhaofeng.pku@gmail.com>"]
 edition = "2018"
 license = "Apache-2.0"
+description = "The real copyless box"
 
 [dependencies]
