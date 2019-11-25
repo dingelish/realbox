@@ -1,9 +1,10 @@
 [package]
 name = "realbox"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["dingelish <dingelish@gmail.com>", "zhaofeng chen <chenzhaofeng.pku@gmail.com>"]
 edition = "2018"
 license = "Apache-2.0"
 description = "The real copyless box"
+homepage = "https://github.com/dingelish/realbox"
 
 [dependencies]
